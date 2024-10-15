@@ -168,6 +168,7 @@ Messages
           transform-origin: 0 0;
   -webkit-animation: bounce 500ms linear both;
           animation: bounce 500ms linear both;
+          text-align: left;
 }
 .messages .message.loading::before {
   position: absolute;

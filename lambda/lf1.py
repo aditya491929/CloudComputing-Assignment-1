@@ -3,15 +3,14 @@ import datetime
 import dateutil.parser
 import json
 import math
+from zoneinfo import ZoneInfo
 
 def lambda_handler(event, context):
-    print(event)
     return search_intent(event)
 
 
 def search_intent(event_info):
     intent_name = event_info['sessionState']['intent']['name']
-    print(intent_name)
     if intent_name == 'GreetingIntent':
         return greeting_intent(event_info)
     elif intent_name == 'DiningSuggestionIntent':
@@ -52,7 +51,6 @@ def thank_you_intent(event_info):
 
 def dining_suggestions_intent(event_info):
     slots = get_slots(event_info)
-    print(slots)
     
     location = slots.get("Location", {}).get('value', {}).get('interpretedValue', None) if slots['Location'] != None else slots['Location']
     cuisine = slots.get("Cuisine", {}).get('value', {}).get('interpretedValue') if slots['Cuisine'] != None else slots['Cuisine']
@@ -64,9 +62,7 @@ def dining_suggestions_intent(event_info):
     source = event_info['invocationSource']
     
     if source == 'DialogCodeHook':
-        print('Inside Source')
         validation_result = validate_slots(location, cuisine, count_people, date, time)
-        print(f'1) {validation_result}')
         if not validation_result['isValid']:
             slots[validation_result['violatedSlot']] = None
             return elicit_slot(event_info['sessionState']['sessionAttributes'],
@@ -76,9 +72,7 @@ def dining_suggestions_intent(event_info):
                                validation_result['message'])
 
         output_session_attributes = event_info['sessionState'].get('sessionAttributes', {})
-        print(f'2{output_session_attributes}')
         if None not in [location, cuisine, count_people, date, time, email]:
-            print('Here')
             send_data_to_sqs(cuisine, location, email, date, time, count_people, event_info)
         return delegate_return(output_session_attributes, slots)
 
@@ -151,21 +145,21 @@ def validation_res(is_valid, violated_slot, message_content):
 
 
 def elicit_slot(session_attributes, intent_name, slots, slot_to_elicit, message):
-    print(f'4{message}')
     return {
         'sessionState': {
-            'sessionAttributes': session_attributes,
-            'intent': {
-                'name': 'DiningSuggestionIntent',
-            },
             'dialogAction': {
                 'type': 'ElicitSlot',
-                'intentName': intent_name,
-                'slots': slots,
                 'slotToElicit': slot_to_elicit,
-                'message': message
+            },
+            'intent': {
+                'name': intent_name,
+                'slots': slots,
+                'state': 'InProgress'
             }
-        }
+        },
+        'messages': [
+                message
+        ]
     }
 
 
@@ -177,7 +171,6 @@ def parse_int(n):
 
 
 def delegate_return(session_attributes, slots):
-    print(f'3 {slots}')
     return {
         'sessionState': {
             'sessionAttributes': session_attributes,
@@ -197,11 +190,10 @@ def delegate_return(session_attributes, slots):
 def validate_slots(location, cuisine, count_people, date, time):
     cuisines = ['italian', 'chinese', 'korean', 'thai', 'vietnamese', 'indian', 'japanese', 'lebanese', 'cuban', 'french']
     if cuisine is not None and cuisine.lower() not in cuisines:
-        return validation_res(False, 'Cuisine', 'Cuisine not found. Please try another.')
+        return validation_res(False, 'Cuisine', '{} cuisine not found. Please try one of the following cuisines {}!'.format(cuisine, ', '.join(cuisines)))
         
     locations = ['manhattan', 'new york', 'nyc', 'new york city', 'ny']
     if location is not None and location.lower() not in locations:
-        print('location')
         return validation_res(False, 'Location', 'We do not have suggestions for "{}", try a different city'.format(location))
 
     if count_people is not None:
@@ -220,8 +212,12 @@ def validate_slots(location, cuisine, count_people, date, time):
         hour, minute = time.split(':')
         hour = parse_int(hour)
         minute = parse_int(minute)
+        
+        current_time = datetime.datetime.now(ZoneInfo("America/New_York")).strftime("%H:%M")
+        current_hour, current_minute = current_time.split(':')
+        current_hour = parse_int(current_hour)
 
-        if hour < 7 or hour > 21:
-            return validation_res(False, 'Time', 'We accept reservations between 7 AM and 9 PM. Please specify a time within this range.')
+        if (hour < 7 or hour > 21) or (hour < current_hour+1):
+            return validation_res(False, 'Time', 'We accept reservations between 7 AM and 9 PM. We don’t accept reservations if they are not made at least 1 hour in advance. Please specify a time within this range.')
 
     return validation_res(True, None, None)
