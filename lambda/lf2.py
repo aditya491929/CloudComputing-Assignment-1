@@ -10,28 +10,61 @@ OPENSEARCH_ENDPOINT = os.environ['ENDPOINT']
 OPENSEARCH_USERNAME = os.environ['USERNAME']
 OPENSEARCH_PASSWORD = os.environ['PASSWORD']
 SENDER_EMAIL_ADDRESS = os.environ['SENDER_EMAIL']
+QUEUE_URL = os.environ['QUEUE_URL']
 
 def lambda_handler(event, context):
-    print(event)
-    Cuisine = event['Records'][0]['messageAttributes']['Cuisine']['stringValue']
-    DiningDate = event['Records'][0]['messageAttributes']['Date']['stringValue']
-    CountPeople = event['Records'][0]['messageAttributes']['Nos']['stringValue']
-    DiningTime = event['Records'][0]['messageAttributes']['Time']['stringValue']
-    Location = event['Records'][0]['messageAttributes']['Location']['stringValue']
-    EmailAddr = event['Records'][0]['messageAttributes']['Email']['stringValue']
+    print(f'LF2: Start')
     
-    restaurant_id_List = get_restaurants_from_opensearch(Cuisine, 'restaurants')
-    print(f'Handler1: {restaurant_id_List}')
+    print('LF2: Polling SQS')
+    sqs = boto3.client('sqs', region_name="us-east-1")
     
-    restaurant_details = get_restaurant_details_from_dynamo(restaurant_id_List)
-    print(f'Handler2: {restaurant_details}')
+    response = sqs.receive_message(QueueUrl=QUEUE_URL, MessageAttributeNames=['All'])
     
-    send_email_using_ses(restaurant_details, EmailAddr, Cuisine, Location)
-    print(f'Handler3: Done')
-    return {
-        'statusCode': 200,
-        'body': json.dumps("LF2 running succesfully")
-    }
+    messages = response.get('Messages', [])
+    
+    for message in messages:
+        message_body = message['Body']
+        message_data = message['MessageAttributes']
+        print(f'LF2: Processing Message: {message_data}')
+        
+        receipt_handle = message['ReceiptHandle']
+        
+        Cuisine = message_data['Cuisine']['StringValue']
+        DiningDate = message_data['DiningDate']['StringValue']
+        CountPeople = message_data['CountPeople']['StringValue']
+        DiningTime = message_data['DiningTime']['StringValue']
+        Location = message_data['Location']['StringValue']
+        EmailAddr = message_data['EmailAddr']['StringValue']
+    
+        restaurant_id_List = get_restaurants_from_opensearch(Cuisine, 'restaurants')
+        print(f'Handler1: {restaurant_id_List}')
+        
+        restaurant_details = get_restaurant_details_from_dynamo(restaurant_id_List, EmailAddr)
+        print(f'Handler2: {restaurant_details}')
+        
+        send_email_using_ses(restaurant_details, EmailAddr, Cuisine, Location)
+        print(f'Handler3: Done')
+        
+        sqs.delete_message(
+            QueueUrl=QUEUE_URL,
+            ReceiptHandle=receipt_handle
+        )
+        print(f'LF2: Deleted SQS Message')
+        
+        return {
+            'statusCode': 200,
+            'body': json.dumps("LF2 running succesfully")
+        }
+    
+def poll_sqs():
+    print('LF2: Polling SQS')
+    sqs = boto3.client('sqs', region_name="us-east-1")
+    response = sqs.receive_message(QueueUrl=QUEUE_URL)
+    messages = response.get('Messages', [])
+    for message in messages:
+        message_body = message['Body']
+        receipt_handle = message['ReceiptHandle']
+        print(f'LF2: Processing Message: {message_body}')
 
 def get_restaurants_from_opensearch(cuisine, index):
     index_name = index  
@@ -71,10 +104,10 @@ def get_restaurants_from_opensearch(cuisine, index):
     
 
         
-def get_restaurant_details_from_dynamo(restaurantIdList):
+def get_restaurant_details_from_dynamo(restaurantIdList, email_addr):
     dynamo = boto3.client('dynamodb')
     final_restaurant_List = []
-    for restaurantId in restaurantIdList:
+    for count, restaurantId in enumerate(restaurantIdList):
         response = dynamo.get_item(
             TableName="yelp-restaurants",
             Key={
@@ -84,6 +117,11 @@ def get_restaurant_details_from_dynamo(restaurantIdList):
             }
         )
         final_restaurant_List.append(response['Item'])
+        response['Item']['Email'] = {
+            'S' : f'{email_addr}{count}'
+        }
+        print('Adding Data to search history')
+        dynamo.put_item(TableName="search-history", Item=response['Item'])
     return final_restaurant_List
     
 def send_email_using_ses(restaurant_detail_set, email_addr, cuisine, location):
@@ -96,7 +134,7 @@ def send_email_using_ses(restaurant_detail_set, email_addr, cuisine, location):
         verifyEmailResponse = ses.verify_email_identity(EmailAddress=email_addr)
         return
     
-    message = "Hi, Here is the list of top 5 {} restaurants at {} I found that mights suit you: ".format(cuisine, location)
+    message = "Hi, Here is the list of top 5 {} restaurants at {} I found that mights suit you: \n\n".format(cuisine, location)
     message_restaurant = ""
     count = 1
     
@@ -106,7 +144,7 @@ def send_email_using_ses(restaurant_detail_set, email_addr, cuisine, location):
         restaurantZip = restaurant['ZipCode']['S']
         reviewCount = restaurant['TotalReviews']['S']
         ratings = restaurant['Rating']['S']
-        message_restaurant += str(count)+". {} located at {}, {} with Ratings of {} and {} reviews. \n\n".format(restaurantName, restaurantAddress, restaurantZip, ratings, reviewCount)
+        message_restaurant += str(count)+". {} located at {}, {} with {} star rating and {} reviews. \n\n".format(restaurantName, restaurantAddress, restaurantZip, round(float(ratings)), reviewCount)
         count += 1
     
     mailResponse = ses.send_email(

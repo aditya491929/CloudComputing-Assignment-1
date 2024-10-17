@@ -11,6 +11,7 @@ def lambda_handler(event, context):
 
 def search_intent(event_info):
     intent_name = event_info['sessionState']['intent']['name']
+    print(f'LF1: Start, intent name: {intent_name}')
     if intent_name == 'GreetingIntent':
         return greeting_intent(event_info)
     elif intent_name == 'DiningSuggestionIntent':
@@ -51,7 +52,7 @@ def thank_you_intent(event_info):
 
 def dining_suggestions_intent(event_info):
     slots = get_slots(event_info)
-    
+    print(f'LF1: DiningSuggestionIntent, event info: {event_info}')
     location = slots.get("Location", {}).get('value', {}).get('interpretedValue', None) if slots['Location'] != None else slots['Location']
     cuisine = slots.get("Cuisine", {}).get('value', {}).get('interpretedValue') if slots['Cuisine'] != None else slots['Cuisine']
     count_people = slots.get("Nos", {}).get('value', {}).get('interpretedValue') if slots['Nos'] != None else slots['Nos']
@@ -60,10 +61,12 @@ def dining_suggestions_intent(event_info):
     email = slots.get("Email", {}).get('value', {}).get('interpretedValue') if slots['Email'] != None else slots['Email']
 
     source = event_info['invocationSource']
-    
+    print(f'LF1: Source: {source}')
     if source == 'DialogCodeHook':
         validation_result = validate_slots(location, cuisine, count_people, date, time)
+        print(f'LF1: Validation Result: {validation_result}')
         if not validation_result['isValid']:
+            print(f'LF1: Eliciting Slot')
             slots[validation_result['violatedSlot']] = None
             return elicit_slot(event_info['sessionState']['sessionAttributes'],
                                event_info['sessionState']['intent']['name'],
@@ -73,7 +76,9 @@ def dining_suggestions_intent(event_info):
 
         output_session_attributes = event_info['sessionState'].get('sessionAttributes', {})
         if None not in [location, cuisine, count_people, date, time, email]:
+            print(f'LF1: Sending details to SQS')
             send_data_to_sqs(cuisine, location, email, date, time, count_people, event_info)
+        print(f'LF1: Delegating control')
         return delegate_return(output_session_attributes, slots)
 
 def send_data_to_sqs(cuisine, location, email, date, time, count_people, event_info):
